@@ -1,5 +1,5 @@
 -- Посмотрим, какие в базе есть таблицы и данные в них
-SELECT *
+select *
 from information_schema.columns
 where table_schema = 'public'
 
