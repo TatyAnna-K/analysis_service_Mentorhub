@@ -1,0 +1,481 @@
+-- Посмотрим, какие в базе есть таблицы и данные в них
+select *
+from information_schema.columns
+where table_schema = 'public'
+
+-- Посмотрим данные в нужных нам таблицах и проверим их на нулевые значения
+select *
+from domain d 
+
+select count(*) as total_rows,
+       sum(case when id is null then 1 else 0 end) as nulls_in_id,
+       sum(case when name is null then 1 else 0 end) as nulls_in_name
+FROM domain d 
+
+select *
+from region r 
+
+select count(*) as total_rows,
+       sum(case when id is null then 1 else 0 end) as nulls_in_id,
+       sum(case when name is null then 1 else 0 end) as nulls_in_name
+FROM region r  
+
+select *
+from sessions s 
+
+select count(*) as total_rows,
+       sum(case when session_id is null then 1 else 0 end) as nulls_in_session_id,
+       sum(case when session_date_time is null then 1 else 0 end) as nulls_in_session_date_time,
+       sum(case when mentor_id is null then 1 else 0 end) as nulls_in_mentor_id,
+       sum(case when mentee_id is null then 1 else 0 end) as nulls_in_mentee_id,
+       sum(case when session_status is null then 1 else 0 end) as nulls_in_session_status,
+       sum(case when mentor_domain_id is null then 1 else 0 end) as nulls_in_mentor_domain_id       
+FROM sessions s  
+
+select *
+from users u 
+
+select count(*) as total_rows,
+       sum(case when user_id is null then 1 else 0 end) as nulls_in_user_id,
+       sum(case when reg_date is null then 1 else 0 end) as nulls_in_reg_date,
+       sum(case when role is null then 1 else 0 end) as nulls_in_role,
+       sum(case when region_id is null then 1 else 0 end) as nulls_in_region_id
+FROM users u 
+
+-- Проверим пользователей на уникальность
+select count(*) all_id,
+       count(distinct user_id) as all_unique_id
+from users u
+
+-- Посчитаем, сколько зарегистрированных менти и менторов на платформе
+select role,
+       count(user_id) as user_quantity
+from users u
+group by role
+
+-- Проверим сессии на уникальность id и посчитаем общее количество сессий
+select count(*) as all_id,
+        count(distinct session_id) as all_unique_id
+from sessions s
+
+-- Убедимся, что все менти и менторы, участвовавшие в сессиях, есть в таблице пользователей
+select  count(distinct mentee_id) as mentee_quantity
+from sessions s 
+where not exists (select user_id from users where mentee_id = user_id)
+
+select count(distinct mentor_id) as mentor_quantity
+from sessions s 
+where not exists (select user_id from users where mentor_id  = user_id)
+
+
+-- Первый вопрос
+-- Считаем количество менторов и менти на платформе по месяцам
+with cnt_mentor_mentee as (
+select date_trunc('month', session_date_time) as date_month,
+       count(distinct mentor_id) as cnt_mentor,
+       count(distinct mentee_id) as cnt_mentee
+from sessions s 
+group by date_trunc('month', session_date_time)
+),
+-- Считаем предыдущее количество менторов и менти по месяцам
+lag_mentor_mentee as (
+select date_month,
+       cnt_mentor,
+       lag(cnt_mentor) over (order by date_month) as lag_mentor,
+       cnt_mentee,
+       lag(cnt_mentee) over (order by date_month) as lag_mentee
+from cnt_mentor_mentee
+)
+-- Считаем относительные и абсолютные изменения количества менторов и менти по месяцам
+select date_month,
+       cnt_mentor,
+       coalesce(round((cnt_mentor - lag_mentor)::numeric / lag_mentor * 100, 1), 0) as change_percent_mentor,
+       coalesce(cnt_mentor - lag_mentor, 0) as change_absolut_mentor,
+       cnt_mentee,
+       coalesce(round((cnt_mentee - lag_mentee)::numeric / lag_mentee * 100, 1), 0) as change_percent_mentee,
+       coalesce(cnt_mentee - lag_mentee, 0) as change_absolut_mentee
+from lag_mentor_mentee
+
+
+-- Второй вопрос
+-- Количество менторов и менти, которые еще не приняли участие ни в одной встрече.
+
+select u.role,
+       count(distinct u.user_id) as cnt_users       
+from users u
+left join sessions s
+on u.user_id = s.mentor_id OR u.user_id = s.mentee_id
+where s.session_id is null
+group by u.role
+
+
+with al_users as (
+-- Выводим всех пользователей
+select user_id, role
+from users u 
+),
+session_users as (
+-- Выводим пользователей, участвовавших в встречах
+select distinct mentor_id as user_id
+from sessions s 
+union 
+select distinct mentee_id as user_id
+from sessions s
+)
+-- Считаем менторов и менти, которые ещё не участвовали в встречах
+select sum(case when au.role = 'mentor' then 1 else 0 end) as inactive_mentors_count,
+       sum(case when au.role = 'mentee' then 1 else 0 end) as inactive_mentees_count
+from al_users au
+left join session_users su
+on au.user_id = su.user_id
+where su.user_id is null
+
+
+-- Третий вопрос
+-- Среднее количество успешных сессий в неделю по месяцам у каждого ментора
+with session_week as (
+select mentor_id, 
+       to_char(session_date_time, 'YYYY-MM') as ym,  -- Извлекаем год и месяц из даты
+       extract (week from session_date_time) as week_number,  -- Определяем номер недели
+       count(session_id) as cnt_sessions  -- Считаем количество сессий
+from sessions s 
+where session_status = 'finished'  -- Берем только успешные (завершенные) сессии
+group by mentor_id, ym, week_number
+order by mentor_id, ym
+)
+select mentor_id, ym, 
+       round(avg(cnt_sessions), 2) as avg_sessions  -- Считаем среднее количество успешных сессий
+from session_week
+group by mentor_id, ym 
+order by mentor_id, ym
+
+-- Четвертый вопрос
+-- ТОП-5 менторов с самым большим числом сессий за последний полный месяц 
+with session_week as (
+select mentor_id, mentor_domain_id, 
+       to_char(session_date_time, 'YYYY-MM') as ym,  -- Извлекаем год и месяц из даты
+       count(session_id) as cnt_sessions   -- Считаем количество сессий
+from sessions s 
+group by mentor_id, mentor_domain_id, ym
+order by cnt_sessions desc
+),
+mentor_rank as (
+  -- Присваиваем ранг ментору по количеству сессий
+select mentor_id, ym, cnt_sessions, d.name,
+       dense_rank() over (order by cnt_sessions desc) as rank_cnt
+from session_week sw
+join domain d
+on sw.mentor_domain_id = d.id
+where ym = '2022-08'
+)
+-- Находим ТОП-5 менторов с самым большим числом сессий за последний полный месяц
+select mentor_id, ym, cnt_sessions, name
+from mentor_rank
+where rank_cnt <=5 
+
+
+-- Пятый вопрос
+-- Среднее время между встречами у одного менти и ментора
+
+-- Среднее время между встречами у одного менти
+with session_date as (
+  -- Нумеруем сессии по дате для каждого менти и находим предыдущую дату для каждой текущей
+select mentee_id, session_id, session_date_time::date as date_session,
+       row_number() over (partition by mentee_id order by session_date_time::date) as session_number,
+       lag(session_date_time::date) over (partition by mentee_id order by session_date_time::date) as lag_date_mentee
+from sessions s 
+),
+  -- Находим разницу между текущей и предыдущей сессиями
+diff_date as (
+select mentee_id, session_id, session_number, date_session, lag_date_mentee,
+       date_session - lag_date_mentee as diff
+from session_date
+)
+  -- Находим среднее количество дней между встречами у каждого менти
+select mentee_id, 
+       round(avg(diff), 0) as avg_diff
+from diff_date
+group by mentee_id
+order by mentee_id
+
+-- Среднее время между встречами у одного ментора
+with session_date_2 as (
+  -- Нумеруем сессии по дате для каждого ментора и находим предыдущую дату для каждой текущей
+select mentor_id, session_id, session_date_time::date as date_session,
+       row_number() over (partition by mentor_id order by session_date_time::date) as session_number,
+       lag(session_date_time::date) over (partition by mentor_id order by session_date_time::date) as lag_date_mentor
+from sessions s 
+),
+  -- Находим разницу между текущей и предыдущей сессиями
+diff_date as (
+select mentor_id, session_id, session_number, date_session, lag_date_mentor,
+       date_session - lag_date_mentor as diff
+from session_date_2
+)
+  -- Находим среднее количество дней между встречами у каждого ментора
+select mentor_id, 
+       round(avg(diff), 0) as avg_diff
+from diff_date
+group by mentor_id
+order by mentor_id
+
+
+-- Шестой вопрос
+  -- Считаем количество отмененных сессий по каждому направлению в месяц
+with session_cancel as (
+select d.name, to_char(s.session_date_time, 'YYYY-MM') as year_month,
+       count(s.session_id) as cnt
+from sessions s
+join domain d 
+on s.mentor_domain_id = d.id
+where session_status = 'canceled'
+group by d.name, year_month
+order by year_month
+)
+  -- Считаем долю отмененных сессий по каждому направлению в месяц
+select year_month, name, cnt,
+       round(cnt / sum(cnt) over (partition by year_month) * 100, 1) as percent
+from session_cancel
+group by year_month, name, cnt
+
+-- Седьмой вопрос
+-- Самый загруженный день недели для каждого направления менторства
+
+  -- Считаем количество встреч для каждого направления менторства по дням недели в августе 2022 г.
+with session_count as (
+select d.name, 
+       to_char(s.session_date_time, 'Day') as day_week,
+       count(s.session_id) as cnt
+from sessions s
+join domain d 
+on s.mentor_domain_id = d.id
+where s.session_date_time::date between '2022-08-01' and '2022-08-31'
+group by d.name, day_week
+),
+  -- Определяем самый загруженный день недели для каждого направления менторства
+table_rank as (
+select name, day_week, cnt,
+       dense_rank() over (partition by name order by cnt desc) as rank_cnt
+from session_count
+)
+select name, day_week, cnt
+from table_rank
+where rank_cnt = 1
+
+-- Восьмой вопрос
+-- Прогноз по менторам (рассчитываем средний коэффициент соотношения менторов и менти)
+
+-- Считаем количество менторов и менти на платформе по месяцам
+with cnt_mentor_mentee as (
+select date_trunc('month', session_date_time) as date_month,
+       count(distinct mentor_id) as cnt_mentor,
+       count(distinct mentee_id) as cnt_mentee
+from sessions s 
+group by date_trunc('month', session_date_time)
+),
+  -- Считаем соотношение менторов и менти
+diff_table as (
+select date_month,
+       cnt_mentor,
+       cnt_mentee,
+       round(cnt_mentor /cnt_mentee::numeric, 2) as diff
+from cnt_mentor_mentee
+)
+  -- Определяем средний показатель по всему периоду
+select round(avg(diff),2) as avg_m
+from diff_table
+
+-- Представления
+
+-- Первый вопрос
+-- Количество менторов и менти на платформе по месяцам
+create view cnt_mentors_mentees as
+-- Считаем количество менторов и менти на платформе по месяцам
+with cnt_mentor_mentee as (
+select date_trunc('month', session_date_time) as date_month,
+       count(distinct mentor_id) as cnt_mentor,
+       count(distinct mentee_id) as cnt_mentee
+from sessions s 
+group by date_trunc('month', session_date_time)
+),
+-- Считаем предыдущее количество менторов и менти по месяцам
+lag_mentor_mentee as (
+select date_month,
+       cnt_mentor,
+       lag(cnt_mentor) over (order by date_month) as lag_mentor,
+       cnt_mentee,
+       lag(cnt_mentee) over (order by date_month) as lag_mentee
+from cnt_mentor_mentee
+)
+-- Считаем относительные и абсолютные изменения количества менторов и менти по месяцам
+select date_month,
+       cnt_mentor,
+       coalesce(round((cnt_mentor - lag_mentor)::numeric / lag_mentor * 100, 1), 0) as change_percent_mentor,
+       coalesce(cnt_mentor - lag_mentor, 0) as change_absolut_mentor,
+       cnt_mentee,
+       coalesce(round((cnt_mentee - lag_mentee)::numeric / lag_mentee * 100, 1), 0) as change_percent_mentee,
+       coalesce(cnt_mentee - lag_mentee, 0) as change_absolut_mentee
+from lag_mentor_mentee
+
+-- Второй вопрос
+-- Количество менторов и менти, которые еще не приняли участие ни в одной встрече.
+create view inactive_mentors_mentee as
+with al_users as (
+-- Выводим всех пользователей
+select user_id, role
+from users u 
+),
+session_users as (
+-- Выводим пользователей, участвовавших в встречах
+select distinct mentor_id as user_id
+from sessions s 
+union 
+select distinct mentee_id as user_id
+from sessions s
+)
+-- Считаем менторов и менти, которые ещё не участвовали в встречах
+select sum(case when au.role = 'mentor' then 1 else 0 end) as inactive_mentors_count,
+       sum(case when au.role = 'mentee' then 1 else 0 end) as inactive_mentees_count
+from al_users au
+left join session_users su
+on au.user_id = su.user_id
+where su.user_id is null
+
+
+-- Третий вопрос
+-- Среднее количество успешных сессий в неделю по месяцам у каждого ментора
+create view avg_sessions_mentors as
+with session_week as (
+select mentor_id, 
+       to_char(session_date_time, 'YYYY-MM') as ym,  -- Извлекаем год и месяц из даты
+       extract (week from session_date_time) as week_number,  -- Определяем номер недели
+       count(session_id) as cnt_sessions  -- Считаем количество сессий
+from sessions s 
+where session_status = 'finished'  -- Берем только успешные (завершенные) сессии
+group by mentor_id, ym, week_number
+order by mentor_id, ym
+)
+select mentor_id, ym,
+       round(avg(cnt_sessions), 2) as avg_sessions  -- Считаем среднее количество успешных сессий
+from session_week
+group by mentor_id, ym
+order by mentor_id, ym
+
+-- Четвертый вопрос
+-- ТОП-5 менторов с самым большим числом сессий за последний полный месяц 
+create view TOP5_mentors as
+with session_week as (
+select mentor_id, mentor_domain_id, 
+       to_char(session_date_time, 'YYYY-MM') as ym,  -- Извлекаем год и месяц из даты
+       count(session_id) as cnt_sessions   -- Считаем количество сессий
+from sessions s 
+group by mentor_id, mentor_domain_id, ym
+order by cnt_sessions desc
+),
+mentor_rank as (
+  -- Присваиваем ранг ментору по количеству сессий
+select mentor_id, ym, cnt_sessions, d.name,
+       dense_rank() over (order by cnt_sessions desc) as rank_cnt
+from session_week sw
+join domain d
+on sw.mentor_domain_id = d.id
+where ym = '2022-08'
+)
+-- Находим ТОП-5 менторов с самым большим числом сессий за последний полный месяц
+select mentor_id, ym, cnt_sessions, name
+from mentor_rank
+where rank_cnt <=5 
+
+ 
+-- Пятый вопрос
+-- Среднее время между встречами у одного менти и ментора
+
+-- Среднее время между встречами у одного менти
+create view avg_time_mentees as
+with session_date as (
+  -- Нумеруем сессии по дате для каждого менти и находим предыдущую дату для каждой текущей
+select mentee_id, session_id, session_date_time::date as date_session,
+       row_number() over (partition by mentee_id order by session_date_time::date) as session_number,
+       lag(session_date_time::date) over (partition by mentee_id order by session_date_time::date) as lag_date_mentee
+from sessions s 
+),
+  -- Находим разницу между текущей и предыдущей сессиями
+diff_date as (
+select mentee_id, session_id, session_number, date_session, lag_date_mentee,
+       date_session - lag_date_mentee as diff
+from session_date
+)
+  -- Находим среднее количество дней между встречами у каждого менти
+select mentee_id, 
+       round(avg(diff), 0) as avg_diff
+from diff_date
+group by mentee_id
+order by mentee_id
+
+-- Среднее время между встречами у одного ментора
+create view avg_time_mentors as
+with session_date_2 as (
+  -- Нумеруем сессии по дате для каждого ментора и находим предыдущую дату для каждой текущей
+select mentor_id, session_id, session_date_time::date as date_session,
+       row_number() over (partition by mentor_id order by session_date_time::date) as session_number,
+       lag(session_date_time::date) over (partition by mentor_id order by session_date_time::date) as lag_date_mentor
+from sessions s 
+),
+  -- Находим разницу между текущей и предыдущей сессиями
+diff_date as (
+select mentor_id, session_id, session_number, date_session, lag_date_mentor,
+       date_session - lag_date_mentor as diff
+from session_date_2
+)
+  -- Находим среднее количество дней между встречами у каждого ментора
+select mentor_id, 
+       round(avg(diff), 0) as avg_diff
+from diff_date
+group by mentor_id
+order by mentor_id
+
+
+-- Шестой вопрос
+  -- Считаем количество отмененных сессий по каждому направлению в месяц
+create view cnt_sessions_canceled as
+with session_cancel as (
+select d.name, to_char(s.session_date_time, 'YYYY-MM') as year_month,
+       COUNT(s.session_id) as cnt
+from sessions s
+join domain d 
+on s.mentor_domain_id = d.id
+where session_status = 'canceled'
+group by d.name, year_month
+order by year_month
+)
+  -- Считаем долю отмененных сессий по каждому направлению в месяц
+select year_month, name, cnt,
+       round(cnt / SUM(cnt) over (partition by year_month) * 100, 1) as percent
+from session_cancel
+group by year_month, name, cnt
+
+
+-- Седьмой вопрос
+-- Самый загруженный день недели для каждого направления менторства
+
+  -- Считаем количество встреч для каждого направления менторства по дням недели в августе 2022 г.
+create view day_week as
+with session_count as (
+select d.name, 
+       to_char(s.session_date_time, 'Day') as day_week,
+       COUNT(s.session_id) as cnt
+from sessions s
+join domain d 
+on s.mentor_domain_id = d.id
+where session_status = 'finished' and s.session_date_time::date between '2022-08-01' and '2022-08-31'
+group by d.name, day_week
+),
+  -- Определяем самый загруженный день недели для каждого направления менторства
+table_rank as (
+select name, day_week, cnt,
+       dense_rank() over (partition by name order by cnt desc) as rank_cnt
+from session_count
+)
+select name, day_week, cnt
+from table_rank
+where rank_cnt = 1
